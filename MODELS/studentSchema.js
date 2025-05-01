@@ -13,8 +13,8 @@ const studentSchema = new mongoose.Schema({
         moduleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Module' }
       }
     ],
-    leetcodeId: String,
-    codechefId: String,
+    leetcodeId: { type: String, default: "" },
+    codechefId: { type: String, default: "" }
   });
 
   module.exports = mongoose.model('Student',studentSchema);

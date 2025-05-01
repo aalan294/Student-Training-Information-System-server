@@ -4,8 +4,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 const bodyParser = require('body-parser');
-const multer = require('multer');
-const xlsx = require('xlsx');
 
 
 const app = express();
@@ -14,16 +12,6 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json()); 
 
-// File upload setup using multer
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, './uploads/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  },
-});
-const upload = multer({ storage: storage });
 
 mongoose.connect(process.env.DB_URL)
   .then(() => console.log('MongoDB Connected'))
@@ -35,3 +23,4 @@ app.listen(process.env.PORT || 5000, () => {
 });
 
 app.use('/admin',require('./ROUTER/adminRoute'));
+app.use('/student',require('./ROUTER/studentRoute'))
