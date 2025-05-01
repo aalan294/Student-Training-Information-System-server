@@ -102,21 +102,30 @@ const bulkRegisterStudents = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
+    const { batch, passoutYear } = req.body;
+
+    if (!batch || !passoutYear) {
+      return res.status(400).json({ message: 'Batch and Passout Year are required in form-data' });
+    }
+
     const filePath = req.file.path;
     const workbook = XLSX.readFile(filePath);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const studentsData = XLSX.utils.sheet_to_json(sheet);
 
-    // Clean up batch names & hash passwords
     const preparedStudents = await Promise.all(
       studentsData.map(async (student) => {
-        const hashedPassword = await bcrypt.hash(student.regNo, 10); // use regNo as default pwd
+        if (!student.name || !student.regNo || !student.email) {
+          throw new Error('Missing required fields (name, regNo, email) in Excel');
+        }
+
+        const hashedPassword = await bcrypt.hash(student.regNo.trim(), 10);
         return {
-          name: student.name?.trim(),
-          regNo: student.regNo?.trim(),
-          email: student.email?.trim(),
-          batch: student.batch?.trim(),
-          passoutYear: student.passoutYear,
+          name: student.name.trim(),
+          regNo: student.regNo.trim(),
+          email: student.email.trim(),
+          batch: batch.trim(),
+          passoutYear: passoutYear.trim(),
           password: hashedPassword
         };
       })
