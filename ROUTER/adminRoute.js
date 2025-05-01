@@ -1,13 +1,28 @@
 const express = require('express');
 const router = express.Router();
+const adminController = require('../CONTROLLER/adminController');
 
+// Admin authentication routes
 router.route('/register')
-    .post(require('../CONTROLLER/adminController').registerAdmin);
+    .post(adminController.registerAdmin);
 router.route('/login')
-    .post(require('../CONTROLLER/adminController').loginAdmin);
+    .post(adminController.loginAdmin);
+
+// Student management routes
 router.route('/bulk-register')
-    .post(require('../MIDDLEWARE/bulkStudentRegister'),require('../CONTROLLER/adminController').bulkRegisterStudents)
+    .post(require('../MIDDLEWARE/bulkStudentRegister'), adminController.bulkRegisterStudents);
 router.route('/register-student')
-    .post(require('../CONTROLLER/adminController').registerStudent)
+    .post(adminController.registerStudent);
+router.route('/students')
+    .get(adminController.getAllStudents);
+router.route('/students/module/:moduleId')
+    .get(adminController.getStudentsByModule);
+
+// Training module management routes
+router.route('/modules')
+    .get(adminController.getAllModules)
+    .post(adminController.addTrainingModule);
+router.route('/modules/:id')
+    .put(adminController.updateModule);
 
 module.exports = router;
