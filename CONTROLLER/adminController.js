@@ -286,6 +286,153 @@ const getStudentsByModule = async (req, res) => {
   }
 };
 
+// Bulk upload exam scores
+const bulkUploadScores = async (req, res) => {
+  try {
+    const { moduleId, examNumber } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No marks file uploaded' });
+    }
+
+    if (!moduleId || examNumber === undefined) {
+      return res.status(400).json({ message: 'Module ID and exam number are required' });
+    }
+
+    const filePath = req.file.path;
+    const workbook = XLSX.readFile(filePath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const scoresData = XLSX.utils.sheet_to_json(sheet);
+
+    // Validate required columns
+    const requiredColumns = ['regNo', 'name', 'mark'];
+    const hasAllColumns = requiredColumns.every(col => 
+      Object.keys(scoresData[0] || {}).includes(col)
+    );
+
+    if (!hasAllColumns) {
+      fs.unlinkSync(filePath);
+      return res.status(400).json({ message: 'Excel file must contain regNo, name, and mark columns' });
+    }
+
+    // Process each student's score
+    const updatePromises = scoresData.map(async (row) => {
+      try {
+        const student = await Student.findOne({ regNo: row.regNo.trim() });
+        
+        if (!student) {
+          return null;
+        }
+
+        const progress = await TrainingProgress.findOne({
+          student: student._id,
+          training: moduleId
+        });
+
+        if (!progress) {
+          return null;
+        }
+
+        // Find the exam score to update - convert both to numbers for comparison
+        const examIndex = progress.examScores.findIndex(score => 
+          Number(score.exam) === Number(examNumber)
+        );
+
+        if (examIndex === -1) {
+          return null;
+        }
+
+        // Update the specific exam score
+        progress.examScores[examIndex].score = Number(row.mark);
+
+        // Update average score
+        const totalScore = progress.examScores.reduce((sum, exam) => sum + exam.score, 0);
+        progress.averageScore = progress.examScores.length > 0 ? totalScore / progress.examScores.length : 0;
+
+        // Save the updated progress
+        const updatedProgress = await progress.save();
+        return updatedProgress;
+      } catch (error) {
+        return null;
+      }
+    });
+
+    const results = await Promise.all(updatePromises);
+    const successfulUpdates = results.filter(result => result !== null);
+
+    fs.unlinkSync(filePath);
+
+    res.status(200).json({
+      message: 'Scores uploaded successfully',
+      totalRecords: scoresData.length,
+      successfulUpdates: successfulUpdates.length,
+      failedUpdates: scoresData.length - successfulUpdates.length,
+      details: successfulUpdates.map(update => ({
+        studentId: update.student,
+        examScores: update.examScores
+      }))
+    });
+  } catch (error) {
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ message: 'Error uploading scores', error: error.message });
+  }
+};
+
+// Upload individual score
+const uploadIndividualScore = async (req, res) => {
+  try {
+    const { studentId, moduleId, examNumber, score } = req.body;
+
+    if (!studentId || !moduleId || examNumber === undefined || score === undefined) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+
+    // Find the training progress
+    const progress = await TrainingProgress.findOne({
+      student: studentId,
+      training: moduleId
+    });
+
+    if (!progress) {
+      return res.status(404).json({ message: 'No training progress found' });
+    }
+
+    // Find the exam score to update - convert both to numbers for comparison
+    const examIndex = progress.examScores.findIndex(score => 
+      Number(score.exam) === Number(examNumber)
+    );
+
+    if (examIndex === -1) {
+      return res.status(400).json({ message: 'Invalid exam number' });
+    }
+
+    // Update the specific exam score
+    progress.examScores[examIndex].score = Number(score);
+
+    // Update average score
+    const totalScore = progress.examScores.reduce((sum, exam) => sum + exam.score, 0);
+    progress.averageScore = progress.examScores.length > 0 ? totalScore / progress.examScores.length : 0;
+
+    // Save the updated progress
+    const updatedProgress = await progress.save();
+
+    res.status(200).json({
+      message: 'Score updated successfully',
+      progress: {
+        student: updatedProgress.student,
+        training: updatedProgress.training,
+        examScores: updatedProgress.examScores,
+        averageScore: updatedProgress.averageScore
+      }
+    });
+  } catch (error) {
+    console.error('Error in uploadIndividualScore:', error);
+    res.status(500).json({ message: 'Error updating score', error: error.message });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -295,5 +442,7 @@ module.exports = {
   addTrainingModule,
   getAllModules,
   updateModule,
-  getStudentsByModule
+  getStudentsByModule,
+  bulkUploadScores,
+  uploadIndividualScore
 };

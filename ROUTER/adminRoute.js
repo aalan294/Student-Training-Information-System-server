@@ -1,6 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../CONTROLLER/adminController');
+const multer = require('multer');
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+
+const upload = multer({ storage: storage });
 
 // Admin authentication routes
 router.route('/register')
@@ -24,5 +37,11 @@ router.route('/modules')
     .post(adminController.addTrainingModule);
 router.route('/modules/:id')
     .put(adminController.updateModule);
+
+// Score management routes
+router.route('/upload-scores')
+    .post(upload.single('marksFile'), adminController.bulkUploadScores);
+router.route('/upload-score')
+    .post(adminController.uploadIndividualScore);
 
 module.exports = router;
