@@ -299,6 +299,7 @@ const bulkUploadScores = async (req, res) => {
     }
 
     if (!moduleId || examNumber === undefined) {
+      if (req.file) fs.unlinkSync(req.file.path); // Clean up file if validation fails
       return res.status(400).json({ message: 'Module ID and exam number are required' });
     }
 
@@ -314,69 +315,77 @@ const bulkUploadScores = async (req, res) => {
     );
 
     if (!hasAllColumns) {
-      fs.unlinkSync(filePath);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       return res.status(400).json({ message: 'Excel file must contain regNo, name, and mark columns' });
     }
 
-    // Process each student's score
-    const updatePromises = scoresData.map(async (row) => {
-      try {
-        const student = await Student.findOne({ regNo: row.regNo.trim() });
-        
-        if (!student) {
+    try {
+      // Process each student's score
+      const updatePromises = scoresData.map(async (row) => {
+        try {
+          const student = await Student.findOne({ regNo: row.regNo.trim() });
+          
+          if (!student) {
+            return null;
+          }
+
+          const progress = await TrainingProgress.findOne({
+            student: student._id,
+            training: moduleId
+          });
+
+          if (!progress) {
+            return null;
+          }
+
+          // Find the exam score to update
+          const examIndex = progress.examScores.findIndex(score => 
+            Number(score.exam) === Number(examNumber)
+          );
+
+          if (examIndex === -1) {
+            return null;
+          }
+
+          // Update the specific exam score
+          progress.examScores[examIndex].score = Number(row.mark)*2;
+
+          // Update average score
+          const totalScore = progress.examScores.reduce((sum, exam) => sum + exam.score, 0);
+          progress.averageScore = progress.examScores.length > 0 ? totalScore / progress.examScores.length : 0;
+
+          // Save the updated progress
+          const updatedProgress = await progress.save();
+          return updatedProgress;
+        } catch (error) {
           return null;
         }
+      });
 
-        const progress = await TrainingProgress.findOne({
-          student: student._id,
-          training: moduleId
-        });
+      const results = await Promise.all(updatePromises);
+      const successfulUpdates = results.filter(result => result !== null);
 
-        if (!progress) {
-          return null;
-        }
-
-        // Find the exam score to update - convert both to numbers for comparison
-        const examIndex = progress.examScores.findIndex(score => 
-          Number(score.exam) === Number(examNumber)
-        );
-
-        if (examIndex === -1) {
-          return null;
-        }
-
-        // Update the specific exam score
-        progress.examScores[examIndex].score = Number(row.mark);
-
-        // Update average score
-        const totalScore = progress.examScores.reduce((sum, exam) => sum + exam.score, 0);
-        progress.averageScore = progress.examScores.length > 0 ? totalScore / progress.examScores.length : 0;
-
-        // Save the updated progress
-        const updatedProgress = await progress.save();
-        return updatedProgress;
-      } catch (error) {
-        return null;
+      res.status(200).json({
+        message: 'Scores uploaded successfully',
+        totalRecords: scoresData.length,
+        successfulUpdates: successfulUpdates.length,
+        failedUpdates: scoresData.length - successfulUpdates.length,
+        details: successfulUpdates.map(update => ({
+          studentId: update.student,
+          examScores: update.examScores
+        }))
+      });
+    } catch (error) {
+      throw error;
+    } finally {
+      // Always clean up the file after processing
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
       }
-    });
-
-    const results = await Promise.all(updatePromises);
-    const successfulUpdates = results.filter(result => result !== null);
-
-    fs.unlinkSync(filePath);
-
-    res.status(200).json({
-      message: 'Scores uploaded successfully',
-      totalRecords: scoresData.length,
-      successfulUpdates: successfulUpdates.length,
-      failedUpdates: scoresData.length - successfulUpdates.length,
-      details: successfulUpdates.map(update => ({
-        studentId: update.student,
-        examScores: update.examScores
-      }))
-    });
+    }
   } catch (error) {
-    if (req.file) {
+    // Clean up file in case of error
+    if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
     res.status(500).json({ message: 'Error uploading scores', error: error.message });
