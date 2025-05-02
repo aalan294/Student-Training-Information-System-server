@@ -28,6 +28,8 @@ router.route('/register-student')
     .post(adminController.registerStudent);
 router.route('/students')
     .get(adminController.getAllStudents);
+router.route('/student/:studentId')
+    .delete(adminController.deleteStudent);
 router.route('/students/module/:moduleId')
     .get(adminController.getStudentsByModule);
 

@@ -14,7 +14,12 @@ const studentSchema = new mongoose.Schema({
       }
     ],
     leetcodeId: { type: String, default: "" },
-    codechefId: { type: String, default: "" }
+    codechefId: { type: String, default: "" },
+    department: { 
+      type: String, 
+      enum: ['CSE', 'IT', 'MECH', 'EEE', 'ECE', 'BIOTECH', 'CIVIL'],
+      required: true
+  }
   });
 
   module.exports = mongoose.model('Student',studentSchema);

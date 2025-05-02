@@ -5,6 +5,7 @@ const trainingModule = new mongoose.Schema({
     description: String,
     durationDays: Number,
     examsCount: Number,
+    isCompleted: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now },
   });
 

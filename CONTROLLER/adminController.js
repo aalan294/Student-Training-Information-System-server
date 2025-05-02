@@ -74,7 +74,7 @@ const loginAdmin = async (req, res) => {
 // 👤 Register Single Student
 const registerStudent = async (req, res) => {
   try {
-    const { name, regNo, email, batch, passoutYear } = req.body;
+    const { name, regNo, email, batch, passoutYear,department } = req.body;
 
     // check for duplicate regNo
     const existing = await Student.findOne({ regNo });
@@ -88,7 +88,8 @@ const registerStudent = async (req, res) => {
       email,
       password: hashedPassword,
       batch,
-      passoutYear
+      passoutYear,
+      department
     });
 
     await newStudent.save();
@@ -104,9 +105,10 @@ const bulkRegisterStudents = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
-    const { batch, passoutYear } = req.body;
+    const { batch, passoutYear, department } = req.body;
 
-    if (!batch || !passoutYear) {
+
+    if (!batch || !passoutYear || !department) {
       return res.status(400).json({ message: 'Batch and Passout Year are required in form-data' });
     }
 
@@ -128,6 +130,7 @@ const bulkRegisterStudents = async (req, res) => {
           email: student.email.trim(),
           batch: batch.trim(),
           passoutYear: passoutYear.trim(),
+          department: department.trim(),
           password: hashedPassword
         };
       })
@@ -433,6 +436,35 @@ const uploadIndividualScore = async (req, res) => {
   }
 };
 
+// Delete student
+const deleteStudent = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+
+    // Find and delete the student
+    const student = await Student.findByIdAndDelete(studentId);
+    
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Delete associated training progress
+    await TrainingProgress.deleteMany({ student: studentId });
+
+    res.status(200).json({ 
+      message: 'Student deleted successfully',
+      deletedStudent: {
+        id: student._id,
+        name: student.name,
+        regNo: student.regNo,
+        email: student.email
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting student', error: error.message });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -444,5 +476,6 @@ module.exports = {
   updateModule,
   getStudentsByModule,
   bulkUploadScores,
-  uploadIndividualScore
+  uploadIndividualScore,
+  deleteStudent
 };
