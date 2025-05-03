@@ -173,7 +173,7 @@ const getModuleLeaderboard = async (req, res) => {
     // Find all students enrolled in this module with their training progress
     const students = await Student.find(
       { 'trainings.moduleId': moduleId },
-      'name regNo'
+      'name regNo department'
     );
 
     // Get training progress for all students
@@ -199,6 +199,7 @@ const getModuleLeaderboard = async (req, res) => {
           studentId: student._id,
           name: student.name,
           regNo: student.regNo,
+          department: student.department,
           examScores,
           averageScore,
           totalScore: progress.totalScore || 0
