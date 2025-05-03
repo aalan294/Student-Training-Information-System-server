@@ -37,13 +37,19 @@ router.route('/students/module/:moduleId')
 router.route('/modules')
     .get(adminController.getAllModules)
     .post(adminController.addTrainingModule);
-router.route('/modules/:id')
-    .put(adminController.updateModule);
+router.route('/modules/:moduleId')
+    .put(adminController.updateModuleDetails);
+router.route('/modules/:moduleId/complete')
+    .put(adminController.markModuleAsCompleted);
 
 // Score management routes
 router.route('/upload-scores')
     .post(upload.single('marksFile'), adminController.bulkUploadScores);
 router.route('/upload-score')
     .post(adminController.uploadIndividualScore);
+
+// Attendance management route
+router.route('/attendance')
+    .post(adminController.updateAttendance);
 
 module.exports = router;

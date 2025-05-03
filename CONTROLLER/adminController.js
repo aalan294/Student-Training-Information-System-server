@@ -474,6 +474,158 @@ const deleteStudent = async (req, res) => {
   }
 };
 
+// Update attendance for multiple students
+const updateAttendance = async (req, res) => {
+  try {
+    const { studentIds, moduleId, date, isPresent } = req.body;
+
+    if (!studentIds || !moduleId || !date || isPresent === undefined) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: studentIds, moduleId, date, and isPresent are required' 
+      });
+    }
+
+    // Validate date format
+    const attendanceDate = new Date(date);
+    if (isNaN(attendanceDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid date format' });
+    }
+
+    // Get all students enrolled in this module
+    const allStudents = await Student.find({ 'trainings.moduleId': moduleId }, '_id');
+    const allStudentIds = allStudents.map(s => s._id.toString());
+
+    // Split students into two groups
+    const presentIds = isPresent ? studentIds : allStudentIds.filter(id => !studentIds.includes(id));
+    const absentIds = isPresent ? allStudentIds.filter(id => !studentIds.includes(id)) : studentIds;
+
+    // Helper to upsert attendance
+    const upsertAttendance = async (studentId, present) => {
+      const progress = await TrainingProgress.findOne({ student: studentId, training: moduleId });
+      if (!progress) return { studentId, status: 'failed', message: 'No training progress found' };
+      const existingIndex = progress.attendance.findIndex(a => a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]);
+      if (existingIndex !== -1) {
+        progress.attendance[existingIndex].present = present;
+      } else {
+        progress.attendance.push({ date: attendanceDate, present });
+      }
+      await progress.save();
+      return { studentId, status: 'success', present };
+    };
+
+    // Update attendance for all students
+    const presentPromises = presentIds.map(id => upsertAttendance(id, true));
+    const absentPromises = absentIds.map(id => upsertAttendance(id, false));
+    const results = await Promise.all([...presentPromises, ...absentPromises]);
+    const successfulUpdates = results.filter(r => r.status === 'success');
+
+    res.status(200).json({
+      message: 'Attendance update completed',
+      totalStudents: allStudentIds.length,
+      successfulUpdates: successfulUpdates.length,
+      failedUpdates: allStudentIds.length - successfulUpdates.length,
+      details: results
+    });
+  } catch (error) {
+    console.error('Error updating attendance:', error);
+    res.status(500).json({ 
+      message: 'Error updating attendance', 
+      error: error.message 
+    });
+  }
+};
+
+// Update module details
+const updateModuleDetails = async (req, res) => {
+  try {
+    const { moduleId } = req.params;
+    const { title, description, durationDays, examsCount, isCompleted } = req.body;
+
+    // Validate required fields
+    if (!title || !description || !durationDays || !examsCount) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: title, description, durationDays, and examsCount are required' 
+      });
+    }
+
+    // Find and update the module
+    const updatedModule = await Module.findByIdAndUpdate(
+      moduleId,
+      {
+        title,
+        description,
+        durationDays,
+        examsCount,
+        isCompleted: isCompleted || false
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedModule) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    res.status(200).json({
+      message: 'Module updated successfully',
+      module: updatedModule
+    });
+
+  } catch (error) {
+    console.error('Error updating module:', error);
+    res.status(500).json({ 
+      message: 'Error updating module', 
+      error: error.message 
+    });
+  }
+};
+
+// Mark module as completed
+const markModuleAsCompleted = async (req, res) => {
+  console.log("function callded")
+  try {
+    const { moduleId } = req.params;
+    console.log(moduleId);
+
+    // Find and update the module
+    const module = await Module.findById(moduleId);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    // Update module status
+    module.isCompleted = true;
+    await module.save();
+
+    // Find all students enrolled in this module
+    const students = await Student.find({ 'trainings.moduleId': moduleId });
+
+    // Update completed trainings count for each student
+    const updatePromises = students.map(async (student) => {
+      student.numTrainingsCompleted += 1;
+      return student.save();
+    });
+
+    await Promise.all(updatePromises);
+
+    res.status(200).json({
+      message: 'Module marked as completed successfully',
+      module: {
+        _id: module._id,
+        title: module.title,
+        isCompleted: module.isCompleted
+      },
+      studentsUpdated: students.length
+    });
+
+  } catch (error) {
+    console.error('Error marking module as completed:', error);
+    res.status(500).json({ 
+      message: 'Error marking module as completed', 
+      error: error.message 
+    });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -486,5 +638,8 @@ module.exports = {
   getStudentsByModule,
   bulkUploadScores,
   uploadIndividualScore,
-  deleteStudent
+  deleteStudent,
+  updateAttendance,
+  updateModuleDetails,
+  markModuleAsCompleted
 };
