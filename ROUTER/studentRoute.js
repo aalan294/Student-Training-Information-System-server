@@ -14,4 +14,8 @@ router.route('/:studentId')
 router.route('/:studentId/module/:moduleId')
     .get(studentController.getStudentModulePerformance);
 
+// Module leaderboard route
+router.route('/module/:moduleId/leaderboard')
+    .get(studentController.getModuleLeaderboard);
+
 module.exports = router;

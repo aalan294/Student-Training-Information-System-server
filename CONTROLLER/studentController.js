@@ -156,8 +156,94 @@ const getStudentModulePerformance = async (req, res) => {
   }
 };
 
+// Get module leaderboard
+const getModuleLeaderboard = async (req, res) => {
+  try {
+    const { moduleId } = req.params;
+    const { studentId } = req.query;
+
+    // Validate moduleId
+    if (!mongoose.Types.ObjectId.isValid(moduleId)) {
+      return res.status(400).json({ 
+        message: 'Invalid module ID format',
+        error: 'Module ID must be a valid MongoDB ObjectId'
+      });
+    }
+
+    // Find all students enrolled in this module with their training progress
+    const students = await Student.find(
+      { 'trainings.moduleId': moduleId },
+      'name regNo'
+    );
+
+    // Get training progress for all students
+    const leaderboardData = await Promise.all(
+      students.map(async (student) => {
+        const progress = await TrainingProgress.findOne({
+          student: student._id,
+          training: moduleId
+        });
+
+        if (!progress) return null;
+
+        // Get all exam scores
+        const examScores = progress.examScores.map(score => ({
+          examNumber: score.exam,
+          score: score.score
+        }));
+
+        // Calculate average score
+        const averageScore = progress.averageScore || 0;
+
+        return {
+          studentId: student._id,
+          name: student.name,
+          regNo: student.regNo,
+          examScores,
+          averageScore,
+          totalScore: progress.totalScore || 0
+        };
+      })
+    );
+
+    // Filter out null entries
+    const validEntries = leaderboardData.filter(entry => entry !== null);
+
+    // Sort by average score by default
+    const sortedLeaderboard = validEntries.sort((a, b) => b.averageScore - a.averageScore);
+
+    // Add rank to each entry
+    const leaderboardWithRank = sortedLeaderboard.map((entry, index) => ({
+      ...entry,
+      rank: index + 1
+    }));
+
+    // Find current student's position
+    const currentStudentPosition = leaderboardWithRank.findIndex(
+      entry => entry.studentId.toString() === studentId
+    );
+
+    res.status(200).json({
+      message: 'Leaderboard retrieved successfully',
+      leaderboard: leaderboardWithRank,
+      currentStudent: currentStudentPosition !== -1 ? {
+        ...leaderboardWithRank[currentStudentPosition],
+        position: currentStudentPosition + 1
+      } : null,
+      totalStudents: leaderboardWithRank.length
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      message: 'Error fetching leaderboard', 
+      error: error.message 
+    });
+  }
+};
+
 module.exports = {
   loginStudent,
   getStudentDetails,
-  getStudentModulePerformance
+  getStudentModulePerformance,
+  getModuleLeaderboard
 };
