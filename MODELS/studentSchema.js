@@ -5,7 +5,7 @@ const studentSchema = new mongoose.Schema({
     regNo: { type: String, unique: true, required: true },
     email: { type: String, required: true },
     password: { type: String, required: true },
-    batch: { type: String, enum: ['Service', 'Dream', 'Super Dream', 'Marquee'], required: true },
+    batch: { type: String, enum: ['Service', 'Dream', 'Super Dream', 'Marquee','General'], required: true },
     passoutYear: { type: Number, required: true },
     numTrainingsCompleted: { type: Number, default: 0 },
     trainings: [
