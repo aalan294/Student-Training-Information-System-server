@@ -6,6 +6,7 @@ const Module = require('../MODELS/moduleSchema');
 const TrainingProgress = require('../MODELS/trainingProcessSchema');
 const XLSX = require('xlsx');
 const fs = require('fs');
+const mongoose = require('mongoose');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -623,6 +624,63 @@ const markModuleAsCompleted = async (req, res) => {
   }
 };
 
+// Update students batch
+const updateStudentsBatch = async (req, res) => {
+  try {
+    const { studentIds, newBatch } = req.body;
+
+    // Validate input
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({
+        message: 'Invalid input',
+        error: 'studentIds must be a non-empty array'
+      });
+    }
+
+    if (!newBatch || typeof newBatch !== 'string') {
+      return res.status(400).json({
+        message: 'Invalid input',
+        error: 'newBatch must be a string'
+      });
+    }
+
+    // Validate all student IDs
+    const invalidIds = studentIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({
+        message: 'Invalid student IDs',
+        error: 'Some student IDs are not valid MongoDB ObjectIds',
+        invalidIds
+      });
+    }
+
+    // Update all students
+    const result = await Student.updateMany(
+      { _id: { $in: studentIds } },
+      { $set: { batch: newBatch } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        message: 'No students found',
+        error: 'None of the provided student IDs exist in the database'
+      });
+    }
+
+    res.status(200).json({
+      message: 'Batch updated successfully',
+      updatedCount: result.modifiedCount,
+      totalMatched: result.matchedCount
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: 'Error updating student batches',
+      error: error.message
+    });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -638,5 +696,6 @@ module.exports = {
   deleteStudent,
   updateAttendance,
   updateModuleDetails,
-  markModuleAsCompleted
+  markModuleAsCompleted,
+  updateStudentsBatch
 };

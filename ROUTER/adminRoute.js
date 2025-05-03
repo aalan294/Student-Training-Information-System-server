@@ -52,4 +52,8 @@ router.route('/upload-score')
 router.route('/attendance')
     .post(adminController.updateAttendance);
 
+// Batch update route
+router.route('/update-batch')
+    .put(adminController.updateStudentsBatch);
+
 module.exports = router;
