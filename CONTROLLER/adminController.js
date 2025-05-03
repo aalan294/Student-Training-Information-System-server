@@ -581,10 +581,8 @@ const updateModuleDetails = async (req, res) => {
 
 // Mark module as completed
 const markModuleAsCompleted = async (req, res) => {
-  console.log("function callded")
   try {
     const { moduleId } = req.params;
-    console.log(moduleId);
 
     // Find and update the module
     const module = await Module.findById(moduleId);
@@ -618,7 +616,6 @@ const markModuleAsCompleted = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error marking module as completed:', error);
     res.status(500).json({ 
       message: 'Error marking module as completed', 
       error: error.message 
