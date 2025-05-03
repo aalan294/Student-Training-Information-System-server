@@ -2,6 +2,7 @@ const Student = require('../MODELS/studentSchema');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const TrainingProgress = require('../MODELS/trainingProcessSchema');
+const mongoose = require('mongoose');
 
 const loginStudent = async (req, res) => {
   try {
@@ -33,6 +34,7 @@ const loginStudent = async (req, res) => {
         regNo: student.regNo,
         email: student.email,
         batch: student.batch,
+        _id: student._id,
         passoutYear: student.passoutYear,
         leetcodeId: student.leetcodeId,
         codechefId: student.codechefId
@@ -50,46 +52,35 @@ const getStudentDetails = async (req, res) => {
   try {
     const { studentId } = req.params;
 
-    // Find student and populate trainings
+    // Validate if studentId is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return res.status(400).json({ 
+        message: 'Invalid student ID format',
+        error: 'Student ID must be a valid MongoDB ObjectId'
+      });
+    }
+
     const student = await Student.findById(studentId)
       .select('-password')
-      .populate({
-        path: 'trainings.moduleId',
-        select: 'title description durationDays examsCount'
-      });
+      .populate('trainings.moduleId', 'title isCompleted');
 
     if (!student) {
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    // Get training progress for each module
-    const studentWithProgress = await Promise.all(
-      student.trainings.map(async (training) => {
-        const progress = await TrainingProgress.findOne({
-          student: studentId,
-          training: training.moduleId._id
-        });
-
-        return {
-          ...training.toObject(),
-          progress: progress || null
-        };
-      })
-    );
-
-    // Create the final response object
-    const response = {
-      ...student.toObject(),
-      trainings: studentWithProgress
-    };
+    const progress = await TrainingProgress.find({ student: studentId })
+      .populate('training', 'title isCompleted');
 
     res.status(200).json({
-      message: 'Student details retrieved successfully',
-      student: response
+      student,
+      progress
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Error fetching student details', error: error.message });
+    console.error('Error in getStudentDetails:', error);
+    res.status(500).json({ 
+      message: 'Error fetching student details', 
+      error: error.message 
+    });
   }
 };
 
