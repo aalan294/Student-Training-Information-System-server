@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 const bodyParser = require('body-parser');
+const staffRoute = require('./ROUTER/staffRoute');
 
 
 const app = express();
@@ -24,3 +25,4 @@ app.listen(process.env.PORT || 5000, () => {
 
 app.use('/admin',require('./ROUTER/adminRoute'));
 app.use('/student',require('./ROUTER/studentRoute'))
+app.use('/staff', staffRoute);

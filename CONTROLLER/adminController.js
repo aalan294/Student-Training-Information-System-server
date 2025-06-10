@@ -4,6 +4,8 @@ const jwt = require('jsonwebtoken');
 const Student = require('../MODELS/studentSchema');
 const Module = require('../MODELS/moduleSchema');
 const TrainingProgress = require('../MODELS/trainingProcessSchema');
+const Staff = require('../MODELS/staffSchema');
+const Venue = require('../MODELS/venueSchema');
 const XLSX = require('xlsx');
 const fs = require('fs');
 const mongoose = require('mongoose');
@@ -153,7 +155,30 @@ const bulkRegisterStudents = async (req, res) => {
 const getAllStudents = async (req, res) => {
   try {
     const students = await Student.find({}, '-password');
-    res.status(200).json({ students });
+    // Get all training progresses for all students
+    const progresses = await TrainingProgress.find({})
+      .select('student venueId training')
+      .populate('venueId', 'name')
+      .populate('training', 'title');
+    // Map studentId to their venueIds (array of {venueId, venueName, trainingId, trainingTitle})
+    const studentVenueMap = {};
+    progresses.forEach(progress => {
+      if (!studentVenueMap[progress.student]) studentVenueMap[progress.student] = [];
+      studentVenueMap[progress.student].push({
+        venueId: progress.venueId?._id?.toString() || null,
+        venueName: progress.venueId?.name || null,
+        trainingId: progress.training?._id?.toString() || null,
+        trainingTitle: progress.training?.title || null
+      });
+    });
+    // Attach venue info to each student
+    const studentsWithVenues = students.map(student => {
+      return {
+        ...student.toObject(),
+        venues: studentVenueMap[student._id] || []
+      };
+    });
+    res.status(200).json({ students: studentsWithVenues });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching students', error: error.message });
   }
@@ -162,11 +187,18 @@ const getAllStudents = async (req, res) => {
 // Add new training module
 const addTrainingModule = async (req, res) => {
   try {
-    const { title, description, durationDays, examsCount, studentIds } = req.body;
+    const { title, description, durationDays, examsCount, venueStudentMap } = req.body;
     
-    // Validate studentIds
-    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
-      return res.status(400).json({ message: 'Student IDs array is required' });
+    // Validate venue-student mapping
+    if (!venueStudentMap || typeof venueStudentMap !== 'object') {
+      return res.status(400).json({ message: 'Venue-student mapping is required' });
+    }
+
+    // Validate all venues exist
+    const venueIds = Object.keys(venueStudentMap);
+    const venues = await Venue.find({ _id: { $in: venueIds } });
+    if (venues.length !== venueIds.length) {
+      return res.status(404).json({ message: 'One or more venues not found' });
     }
 
     // Create new module
@@ -179,40 +211,64 @@ const addTrainingModule = async (req, res) => {
 
     await newModule.save();
 
-    // Update students with the new module
-    const updateStudents = await Student.updateMany(
-      { _id: { $in: studentIds } },
-      { $push: { trainings: { moduleId: newModule._id } } }
-    );
+    // Process each venue and its students
+    const allStudentIds = [];
+    const trainingProgressPromises = [];
 
-    if (updateStudents.modifiedCount === 0) {
-      return res.status(400).json({ message: 'No students were updated' });
-    }
+    for (const [venueId, studentIds] of Object.entries(venueStudentMap)) {
+      // Validate students exist
+      const students = await Student.find({ _id: { $in: studentIds } });
+      if (students.length !== studentIds.length) {
+        return res.status(404).json({ message: 'One or more students not found' });
+      }
 
-    // Create training progress entries for each student
-    const trainingProgressPromises = studentIds.map(studentId => {
-      const progress = new TrainingProgress({
-        student: studentId,
-        training: newModule._id,
-        attendance: [],
-        examScores: Array(examsCount).fill().map((_, index) => ({
-          exam: index + 1,
-          score: 0
-        })),
-        averageScore: 0
+      // Add students to the module
+      await Student.updateMany(
+        { _id: { $in: studentIds } },
+        { $push: { trainings: { moduleId: newModule._id } } }
+      );
+
+      // Create training progress for each student with their assigned venue
+      studentIds.forEach(studentId => {
+        const progress = new TrainingProgress({
+          student: studentId,
+          training: newModule._id,
+          venueId: venueId,
+          attendance: [],
+          examScores: Array(examsCount).fill().map((_, index) => ({
+            exam: index + 1,
+            score: 0
+          })),
+          averageScore: 0
+        });
+        trainingProgressPromises.push(progress.save());
+        allStudentIds.push(studentId);
       });
-      return progress.save();
-    });
+    }
 
     await Promise.all(trainingProgressPromises);
 
-    res.status(201).json({ 
-      message: 'Training module added and assigned to students successfully', 
-      module: newModule,
-      studentsAssigned: updateStudents.modifiedCount
+    // Prepare venue details for response
+    const venueDetails = venues.map(venue => ({
+      id: venue._id,
+      name: venue.name,
+      capacity: venue.capacity,
+      studentsAssigned: venueStudentMap[venue._id].length
+    }));
+
+    res.status(201).json({
+      message: 'Training module created and assigned successfully',
+      module: {
+        id: newModule._id,
+        title: newModule.title,
+        venues: venueDetails,
+        totalStudentsAssigned: allStudentIds.length
+      }
     });
+
   } catch (error) {
-    res.status(500).json({ message: 'Error adding training module', error: error.message });
+    console.error('Error in addTrainingModule:', error);
+    res.status(500).json({ message: 'Error creating training module', error: error.message });
   }
 };
 
@@ -681,6 +737,356 @@ const updateStudentsBatch = async (req, res) => {
   }
 };
 
+// Register Staff
+const registerStaff = async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    // Check if staff already exists
+    const existingStaff = await Staff.findOne({ email });
+    if (existingStaff) {
+      return res.status(400).json({ message: 'Staff with this email already exists' });
+    }
+
+    // Hash the email to use as password
+    const hashedPassword = await bcrypt.hash(email, 10);
+
+    const newStaff = new Staff({
+      name,
+      email,
+      password: hashedPassword,
+      status: 'unassigned',
+      venueId: null
+    });
+
+    await newStaff.save();
+
+    res.status(201).json({ 
+      message: 'Staff registered successfully',
+      staff: {
+        name: newStaff.name,
+        email: newStaff.email,
+        status: newStaff.status,
+        venueId: newStaff.venueId
+      }
+    });
+  } catch (error) {
+    console.error('Staff registration error:', error);
+    res.status(500).json({ message: 'Server error during staff registration', error: error.message });
+  }
+};
+
+// Register Venue
+const registerVenue = async (req, res) => {
+  try {
+    const { name, capacity, status } = req.body;
+
+    // Validate input
+    if (!name || !capacity) {
+      return res.status(400).json({ message: 'Name and capacity are required' });
+    }
+
+    // Validate status if provided
+    if (status && !['unassigned', 'assigned'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value. Must be either "unassigned" or "assigned"' });
+    }
+
+    // Check if venue already exists
+    const existingVenue = await Venue.findOne({ name });
+    if (existingVenue) {
+      return res.status(400).json({ message: 'Venue with this name already exists' });
+    }
+
+    // Create new venue
+    const newVenue = new Venue({
+      name,
+      capacity,
+      status: status || 'unassigned' // Use provided status or default to 'unassigned'
+    });
+
+    await newVenue.save();
+
+    res.status(201).json({
+      message: 'Venue registered successfully',
+      venue: {
+        id: newVenue._id,
+        name: newVenue.name,
+        capacity: newVenue.capacity,
+        status: newVenue.status
+      }
+    });
+  } catch (error) {
+    console.error('Venue registration error:', error);
+    res.status(500).json({ message: 'Server error during venue registration', error: error.message });
+  }
+};
+
+// Get All Venues
+const getAllVenues = async (req, res) => {
+  try {
+    const venues = await Venue.find({});
+    res.status(200).json({ venues });
+  } catch (error) {
+    console.error('Error fetching venues:', error);
+    res.status(500).json({ message: 'Error fetching venues', error: error.message });
+  }
+};
+
+// Assign Staff to Venue
+const assignStaffToVenue = async (req, res) => {
+  try {
+    const { staffId, venueId } = req.body;
+
+    // Validate input
+    if (!staffId || !venueId) {
+      return res.status(400).json({ message: 'Staff ID and Venue ID are required' });
+    }
+
+    // Check if staff exists and is unassigned
+    const staff = await Staff.findById(staffId);
+    if (!staff) {
+      return res.status(404).json({ message: 'Staff not found' });
+    }
+    if (staff.status === 'assigned') {
+      return res.status(400).json({ message: 'Staff is already assigned to a venue' });
+    }
+
+    // Check if venue exists and is unassigned
+    const venue = await Venue.findById(venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Venue not found' });
+    }
+    if (venue.status === 'assigned') {
+      return res.status(400).json({ message: 'Venue is already assigned to a staff' });
+    }
+
+    // Update staff with venue and status
+    staff.venueId = venueId;
+    staff.status = 'assigned';
+    await staff.save();
+
+    // Update venue status
+    venue.status = 'assigned';
+    await venue.save();
+
+    res.status(200).json({
+      message: 'Staff assigned to venue successfully',
+      assignment: {
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          email: staff.email,
+          status: staff.status
+        },
+        venue: {
+          id: venue._id,
+          name: venue.name,
+          capacity: venue.capacity,
+          status: venue.status
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Staff assignment error:', error);
+    res.status(500).json({ message: 'Server error during staff assignment', error: error.message });
+  }
+};
+
+// Get All Staff Details
+const getAllStaff = async (req, res) => {
+  try {
+    const staff = await Staff.find({})
+      .populate('venueId', 'name capacity status')
+      .select('-password'); // Exclude password from response
+
+    // Format the response
+    const formattedStaff = staff.map(staffMember => ({
+      id: staffMember._id,
+      name: staffMember.name,
+      email: staffMember.email,
+      status: staffMember.status,
+      venue: staffMember.venueId ? {
+        id: staffMember.venueId._id,
+        name: staffMember.venueId.name,
+        capacity: staffMember.venueId.capacity,
+        status: staffMember.venueId.status
+      } : null
+    }));
+
+    res.status(200).json({
+      message: 'Staff details retrieved successfully',
+      staff: formattedStaff
+    });
+  } catch (error) {
+    console.error('Error fetching staff:', error);
+    res.status(500).json({ message: 'Error fetching staff details', error: error.message });
+  }
+};
+
+// Unassign Staff from Venue
+const unassignStaffFromVenue = async (req, res) => {
+  try {
+    const { staffId } = req.body;
+
+    // Validate input
+    if (!staffId) {
+      return res.status(400).json({ message: 'Staff ID is required' });
+    }
+
+    // Check if staff exists and is assigned
+    const staff = await Staff.findById(staffId);
+    if (!staff) {
+      return res.status(404).json({ message: 'Staff not found' });
+    }
+    if (staff.status !== 'assigned' || !staff.venueId) {
+      return res.status(400).json({ message: 'Staff is not assigned to any venue' });
+    }
+
+    // Get the venue
+    const venue = await Venue.findById(staff.venueId);
+    if (!venue) {
+      return res.status(404).json({ message: 'Associated venue not found' });
+    }
+
+    // Update staff
+    staff.venueId = null;
+    staff.status = 'unassigned';
+    await staff.save();
+
+    // Update venue
+    venue.status = 'unassigned';
+    await venue.save();
+
+    res.status(200).json({
+      message: 'Staff unassigned from venue successfully',
+      unassignment: {
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          email: staff.email,
+          status: staff.status
+        },
+        venue: {
+          id: venue._id,
+          name: venue.name,
+          capacity: venue.capacity,
+          status: venue.status
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Staff unassignment error:', error);
+    res.status(500).json({ message: 'Server error during staff unassignment', error: error.message });
+  }
+};
+
+// Emergency Unassign All Staff and Venues
+const emergencyUnassignAll = async (req, res) => {
+  try {
+    // Get all assigned staff
+    const assignedStaff = await Staff.find({ status: 'assigned' });
+    
+    // Get all assigned venues
+    const assignedVenues = await Venue.find({ status: 'assigned' });
+
+    // Update all assigned staff
+    const staffUpdatePromises = assignedStaff.map(staff => {
+      staff.venueId = null;
+      staff.status = 'unassigned';
+      return staff.save();
+    });
+
+    // Update all assigned venues
+    const venueUpdatePromises = assignedVenues.map(venue => {
+      venue.status = 'unassigned';
+      return venue.save();
+    });
+
+    // Wait for all updates to complete
+    await Promise.all([...staffUpdatePromises, ...venueUpdatePromises]);
+
+    res.status(200).json({
+      message: 'Emergency unassignment completed successfully',
+      summary: {
+        staffUnassigned: assignedStaff.length,
+        venuesUnassigned: assignedVenues.length,
+        details: {
+          staff: assignedStaff.map(staff => ({
+            id: staff._id,
+            name: staff.name,
+            email: staff.email
+          })),
+          venues: assignedVenues.map(venue => ({
+            id: venue._id,
+            name: venue.name,
+            capacity: venue.capacity
+          }))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Emergency unassignment error:', error);
+    res.status(500).json({ 
+      message: 'Server error during emergency unassignment', 
+      error: error.message 
+    });
+  }
+};
+
+// Get Attendance History for All Venues
+const getAllVenuesAttendanceHistory = async (req, res) => {
+  try {
+    // Get all venues
+    const venues = await Venue.find({});
+    // For each venue, get all progresses and attendance grouped by date
+    const venueAttendance = await Promise.all(venues.map(async (venue) => {
+      const progresses = await TrainingProgress.find({ venueId: venue._id })
+        .populate('student', 'name regNo email batch department');
+      // Group attendance by date
+      const attendanceByDate = {};
+      progresses.forEach(progress => {
+        progress.attendance.forEach(record => {
+          const dateStr = record.date.toISOString().split('T')[0];
+          if (!attendanceByDate[dateStr]) {
+            attendanceByDate[dateStr] = {
+              date: dateStr,
+              present: [],
+              absent: []
+            };
+          }
+          const studentInfo = {
+            id: progress.student._id,
+            name: progress.student.name,
+            regNo: progress.student.regNo,
+            email: progress.student.email,
+            batch: progress.student.batch,
+            department: progress.student.department
+          };
+          if (record.present) {
+            attendanceByDate[dateStr].present.push(studentInfo);
+          } else {
+            attendanceByDate[dateStr].absent.push(studentInfo);
+          }
+        });
+      });
+      // Convert to array and sort by date
+      const attendanceHistory = Object.values(attendanceByDate)
+        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      return {
+        venue: {
+          id: venue._id,
+          name: venue.name,
+          capacity: venue.capacity
+        },
+        attendanceHistory
+      };
+    }));
+    res.status(200).json({ venueAttendance });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching all venues attendance history', error: error.message });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -697,5 +1103,13 @@ module.exports = {
   updateAttendance,
   updateModuleDetails,
   markModuleAsCompleted,
-  updateStudentsBatch
+  updateStudentsBatch,
+  registerStaff,
+  registerVenue,
+  getAllVenues,
+  assignStaffToVenue,
+  getAllStaff,
+  unassignStaffFromVenue,
+  emergencyUnassignAll,
+  getAllVenuesAttendanceHistory
 };

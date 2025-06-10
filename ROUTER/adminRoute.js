@@ -52,8 +52,28 @@ router.route('/upload-score')
 router.route('/attendance')
     .post(adminController.updateAttendance);
 
+// Attendance history for all venues
+router.get('/attendance-history', adminController.getAllVenuesAttendanceHistory);
+
 // Batch update route
 router.route('/update-batch')
     .put(adminController.updateStudentsBatch);
+
+// Staff management routes
+router.route('/register-staff')
+    .post(adminController.registerStaff);
+router.route('/staff')
+    .get(adminController.getAllStaff);
+router.route('/staff/assign')
+    .post(adminController.assignStaffToVenue);
+router.route('/staff/unassign')
+    .post(adminController.unassignStaffFromVenue);
+router.route('/staff/emergency-unassign-all')
+    .post(adminController.emergencyUnassignAll);
+
+// Venue management routes
+router.route('/venues')
+    .post(adminController.registerVenue)
+    .get(adminController.getAllVenues);
 
 module.exports = router;
