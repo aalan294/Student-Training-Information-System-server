@@ -2,6 +2,7 @@ const Staff = require('../MODELS/staffSchema');
 const Venue = require('../MODELS/venueSchema');
 const Student = require('../MODELS/studentSchema');
 const TrainingProgress = require('../MODELS/trainingProcessSchema');
+const { sendAbsenceEmail } = require('../services/emailService');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
@@ -75,7 +76,7 @@ const markAttendance = async (req, res) => {
     const staff = await Staff.findById(staffId);
     if (!staff || !staff.venueId) return res.status(404).json({ message: 'Staff or assigned venue not found' });
     
-    const progresses = await TrainingProgress.find({ venueId: staff.venueId });
+    const progresses = await TrainingProgress.find({ venueId: staff.venueId }).populate('student', 'email');
     const attendanceDate = new Date(date);
     if (isNaN(attendanceDate.getTime())) {
       return res.status(400).json({ message: 'Invalid date format' });
@@ -83,8 +84,8 @@ const markAttendance = async (req, res) => {
 
     // Mark attendance for each student
     const updatePromises = progresses.map(async (progress) => {
-      const studentAttendance = attendanceData.find(a => a.studentId === progress.student.toString());
-      if (!studentAttendance) return { studentId: progress.student, status: 'skipped' };
+      const studentAttendance = attendanceData.find(a => a.studentId === progress.student._id.toString());
+      if (!studentAttendance) return { studentId: progress.student._id, status: 'skipped' };
 
       const existingIndex = progress.attendance.findIndex(a => 
         a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
@@ -112,7 +113,7 @@ const markAttendance = async (req, res) => {
       
       await progress.save();
       return { 
-        studentId: progress.student, 
+        student: progress.student, 
         status: 'success',
         present: studentAttendance.present,
         od: studentAttendance.od || false
@@ -120,9 +121,17 @@ const markAttendance = async (req, res) => {
     });
 
     const results = await Promise.all(updatePromises);
+
+    // Send emails to absent students
+    results.forEach(result => {
+      if (result.status === 'success' && !result.present && !result.od) {
+        sendAbsenceEmail(result.student.email, date, session);
+      }
+    });
+
     res.status(200).json({ 
       message: `${session} attendance marked successfully`, 
-      results,
+      results: results.map(r => ({ ...r, student: r.student ? r.student._id : null })),
       session,
       date: attendanceDate.toISOString().split('T')[0]
     });
@@ -190,9 +199,57 @@ const getVenueAttendanceHistory = async (req, res) => {
       });
     });
 
-    // Convert to array and sort by date
-    const attendanceHistory = Object.values(attendanceByDate)
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Convert to array and calculate daily summary for each day
+    const attendanceHistory = Object.values(attendanceByDate).map(day => {
+      const allStudentIds = new Set([
+        ...day.forenoon.present.map(s => s.id.toString()),
+        ...day.forenoon.absent.map(s => s.id.toString()),
+        ...day.forenoon.od.map(s => s.id.toString()),
+        ...day.afternoon.present.map(s => s.id.toString()),
+        ...day.afternoon.absent.map(s => s.id.toString()),
+        ...day.afternoon.od.map(s => s.id.toString()),
+      ]);
+
+      let present = 0;
+      let absent = 0; // Absent for both sessions
+      let onDuty = 0;
+      let partial = 0; // e.g., Present in one, absent in other
+
+      allStudentIds.forEach(studentId => {
+        const isForenoonPresent = day.forenoon.present.some(s => s.id.toString() === studentId);
+        const isForenoonAbsent = day.forenoon.absent.some(s => s.id.toString() === studentId);
+        const isForenoonOD = day.forenoon.od.some(s => s.id.toString() === studentId);
+
+        const isAfternoonPresent = day.afternoon.present.some(s => s.id.toString() === studentId);
+        const isAfternoonAbsent = day.afternoon.absent.some(s => s.id.toString() === studentId);
+        const isAfternoonOD = day.afternoon.od.some(s => s.id.toString() === studentId);
+
+        if (isForenoonOD || isAfternoonOD) {
+          onDuty++;
+        } else if (isForenoonAbsent && isAfternoonAbsent) {
+          absent++;
+        } else if (isForenoonPresent && isAfternoonPresent) {
+          present++;
+        } else if (isForenoonPresent || isAfternoonPresent) {
+          if ((isForenoonPresent && isAfternoonAbsent) || (isForenoonAbsent && isAfternoonPresent)) {
+            partial++;
+          } else {
+            present++;
+          }
+        }
+      });
+      
+      return {
+        ...day,
+        summary: {
+          present,
+          absent,
+          onDuty,
+          partial,
+          totalStudents: allStudentIds.size
+        }
+      };
+    }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
     res.status(200).json({ attendanceHistory });
   } catch (error) {
