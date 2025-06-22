@@ -117,11 +117,48 @@ const getStudentModulePerformance = async (req, res) => {
     const totalScore = examScores.reduce((sum, exam) => sum + exam.score, 0);
     const averageScore = examScores.length > 0 ? totalScore / examScores.length : 0;
 
-    // Calculate attendance percentage
+    // Calculate attendance percentage with new structure
     const attendance = trainingProgress.attendance;
-    const totalDays = attendance.length;
-    const presentDays = attendance.filter(day => day.present).length;
-    const attendancePercentage = totalDays > 0 ? (presentDays / totalDays) * 100 : 0;
+    let totalSessions = 0;
+    let presentSessions = 0;
+    let odSessions = 0;
+
+    attendance.forEach(day => {
+      // Count forenoon session
+      if (day.forenoon) {
+        totalSessions++;
+        if (day.forenoon.present || day.forenoon.od) {
+          presentSessions++;
+          if (day.forenoon.od) odSessions++;
+        }
+      }
+      
+      // Count afternoon session
+      if (day.afternoon) {
+        totalSessions++;
+        if (day.afternoon.present || day.afternoon.od) {
+          presentSessions++;
+          if (day.afternoon.od) odSessions++;
+        }
+      }
+    });
+
+    const attendancePercentage = totalSessions > 0 ? (presentSessions / totalSessions) * 100 : 0;
+
+    // Create detailed attendance breakdown
+    const attendanceDetails = attendance.map(day => ({
+      date: day.date,
+      forenoon: day.forenoon ? {
+        present: day.forenoon.present,
+        od: day.forenoon.od,
+        status: day.forenoon.od ? 'OD' : (day.forenoon.present ? 'Present' : 'Absent')
+      } : null,
+      afternoon: day.afternoon ? {
+        present: day.afternoon.present,
+        od: day.afternoon.od,
+        status: day.afternoon.od ? 'OD' : (day.afternoon.present ? 'Present' : 'Absent')
+      } : null
+    }));
 
     // Create the response object
     const response = {
@@ -136,9 +173,11 @@ const getStudentModulePerformance = async (req, res) => {
       module: student.trainings.find(t => t.moduleId?._id.toString() === moduleId)?.moduleId,
       performance: {
         attendance: {
-          totalDays,
-          presentDays,
-          percentage: attendancePercentage
+          totalSessions,
+          presentSessions,
+          odSessions,
+          percentage: Math.round(attendancePercentage * 100) / 100,
+          details: attendanceDetails
         },
         examScores: trainingProgress.examScores,
         averageScore,

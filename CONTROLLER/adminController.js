@@ -534,11 +534,19 @@ const deleteStudent = async (req, res) => {
 // Update attendance for multiple students
 const updateAttendance = async (req, res) => {
   try {
-    const { studentIds, moduleId, date, isPresent } = req.body;
+    const { studentIds, moduleId, date, session, attendanceData } = req.body;
+    // session: 'forenoon' or 'afternoon'
+    // attendanceData: array of {studentId, present, od}
 
-    if (!studentIds || !moduleId || !date || isPresent === undefined) {
+    if (!studentIds || !moduleId || !date || !session || !attendanceData) {
       return res.status(400).json({ 
-        message: 'Missing required fields: studentIds, moduleId, date, and isPresent are required' 
+        message: 'Missing required fields: studentIds, moduleId, date, session, and attendanceData are required' 
+      });
+    }
+
+    if (!['forenoon', 'afternoon'].includes(session)) {
+      return res.status(400).json({ 
+        message: 'Invalid session. Must be either "forenoon" or "afternoon"' 
       });
     }
 
@@ -552,35 +560,60 @@ const updateAttendance = async (req, res) => {
     const allStudents = await Student.find({ 'trainings.moduleId': moduleId }, '_id');
     const allStudentIds = allStudents.map(s => s._id.toString());
 
-    // Split students into two groups
-    const presentIds = isPresent ? studentIds : allStudentIds.filter(id => !studentIds.includes(id));
-    const absentIds = isPresent ? allStudentIds.filter(id => !studentIds.includes(id)) : studentIds;
-
     // Helper to upsert attendance
-    const upsertAttendance = async (studentId, present) => {
+    const upsertAttendance = async (studentId, present, od = false) => {
       const progress = await TrainingProgress.findOne({ student: studentId, training: moduleId });
       if (!progress) return { studentId, status: 'failed', message: 'No training progress found' };
-      const existingIndex = progress.attendance.findIndex(a => a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]);
+      
+      const existingIndex = progress.attendance.findIndex(a => 
+        a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
+      );
+
       if (existingIndex !== -1) {
-        progress.attendance[existingIndex].present = present;
+        // Update existing attendance record
+        progress.attendance[existingIndex][session] = {
+          present,
+          od
+        };
       } else {
-        progress.attendance.push({ date: attendanceDate, present });
+        // Create new attendance record
+        const newAttendance = {
+          date: attendanceDate,
+          forenoon: { present: false, od: false },
+          afternoon: { present: false, od: false }
+        };
+        newAttendance[session] = {
+          present,
+          od
+        };
+        progress.attendance.push(newAttendance);
       }
+      
       await progress.save();
-      return { studentId, status: 'success', present };
+      return { studentId, status: 'success', present, od };
     };
 
     // Update attendance for all students
-    const presentPromises = presentIds.map(id => upsertAttendance(id, true));
-    const absentPromises = absentIds.map(id => upsertAttendance(id, false));
-    const results = await Promise.all([...presentPromises, ...absentPromises]);
+    const updatePromises = allStudentIds.map(async (studentId) => {
+      const studentAttendance = attendanceData.find(a => a.studentId === studentId);
+      if (studentAttendance) {
+        return await upsertAttendance(studentId, studentAttendance.present, studentAttendance.od || false);
+      } else {
+        // If student not in attendanceData, mark as absent
+        return await upsertAttendance(studentId, false, false);
+      }
+    });
+
+    const results = await Promise.all(updatePromises);
     const successfulUpdates = results.filter(r => r.status === 'success');
 
     res.status(200).json({
-      message: 'Attendance update completed',
+      message: `${session} attendance update completed`,
       totalStudents: allStudentIds.length,
       successfulUpdates: successfulUpdates.length,
       failedUpdates: allStudentIds.length - successfulUpdates.length,
+      session,
+      date: attendanceDate.toISOString().split('T')[0],
       details: results
     });
   } catch (error) {
@@ -1050,10 +1083,11 @@ const getAllVenuesAttendanceHistory = async (req, res) => {
           if (!attendanceByDate[dateStr]) {
             attendanceByDate[dateStr] = {
               date: dateStr,
-              present: [],
-              absent: []
+              forenoon: { present: [], absent: [], od: [] },
+              afternoon: { present: [], absent: [], od: [] }
             };
           }
+          
           const studentInfo = {
             id: progress.student._id,
             name: progress.student.name,
@@ -1062,10 +1096,27 @@ const getAllVenuesAttendanceHistory = async (req, res) => {
             batch: progress.student.batch,
             department: progress.student.department
           };
-          if (record.present) {
-            attendanceByDate[dateStr].present.push(studentInfo);
-          } else {
-            attendanceByDate[dateStr].absent.push(studentInfo);
+
+          // Process forenoon session
+          if (record.forenoon) {
+            if (record.forenoon.od) {
+              attendanceByDate[dateStr].forenoon.od.push(studentInfo);
+            } else if (record.forenoon.present) {
+              attendanceByDate[dateStr].forenoon.present.push(studentInfo);
+            } else {
+              attendanceByDate[dateStr].forenoon.absent.push(studentInfo);
+            }
+          }
+
+          // Process afternoon session
+          if (record.afternoon) {
+            if (record.afternoon.od) {
+              attendanceByDate[dateStr].afternoon.od.push(studentInfo);
+            } else if (record.afternoon.present) {
+              attendanceByDate[dateStr].afternoon.present.push(studentInfo);
+            } else {
+              attendanceByDate[dateStr].afternoon.absent.push(studentInfo);
+            }
           }
         });
       });

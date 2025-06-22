@@ -71,28 +71,61 @@ const getVenueStudents = async (req, res) => {
 const markAttendance = async (req, res) => {
   try {
     const staffId = req.user.id;
-    const { date, presentStudentIds } = req.body; // presentStudentIds: array of student IDs
+    const { date, session, attendanceData } = req.body; // session: 'forenoon' or 'afternoon', attendanceData: array of {studentId, present, od}
     const staff = await Staff.findById(staffId);
     if (!staff || !staff.venueId) return res.status(404).json({ message: 'Staff or assigned venue not found' });
+    
     const progresses = await TrainingProgress.find({ venueId: staff.venueId });
     const attendanceDate = new Date(date);
     if (isNaN(attendanceDate.getTime())) {
       return res.status(400).json({ message: 'Invalid date format' });
     }
+
     // Mark attendance for each student
     const updatePromises = progresses.map(async (progress) => {
-      const isPresent = presentStudentIds.includes(progress.student.toString());
-      const existingIndex = progress.attendance.findIndex(a => a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]);
+      const studentAttendance = attendanceData.find(a => a.studentId === progress.student.toString());
+      if (!studentAttendance) return { studentId: progress.student, status: 'skipped' };
+
+      const existingIndex = progress.attendance.findIndex(a => 
+        a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
+      );
+
       if (existingIndex !== -1) {
-        progress.attendance[existingIndex].present = isPresent;
+        // Update existing attendance record
+        progress.attendance[existingIndex][session] = {
+          present: studentAttendance.present,
+          od: studentAttendance.od || false
+        };
       } else {
-        progress.attendance.push({ date: attendanceDate, present: isPresent });
+        // Create new attendance record
+        const newAttendance = {
+          date: attendanceDate,
+          forenoon: { present: false, od: false },
+          afternoon: { present: false, od: false }
+        };
+        newAttendance[session] = {
+          present: studentAttendance.present,
+          od: studentAttendance.od || false
+        };
+        progress.attendance.push(newAttendance);
       }
+      
       await progress.save();
-      return { studentId: progress.student, present: isPresent };
+      return { 
+        studentId: progress.student, 
+        status: 'success',
+        present: studentAttendance.present,
+        od: studentAttendance.od || false
+      };
     });
+
     const results = await Promise.all(updatePromises);
-    res.status(200).json({ message: 'Attendance marked', results });
+    res.status(200).json({ 
+      message: `${session} attendance marked successfully`, 
+      results,
+      session,
+      date: attendanceDate.toISOString().split('T')[0]
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error marking attendance', error: error.message });
   }
@@ -119,10 +152,11 @@ const getVenueAttendanceHistory = async (req, res) => {
         if (!attendanceByDate[dateStr]) {
           attendanceByDate[dateStr] = {
             date: dateStr,
-            present: [],
-            absent: []
+            forenoon: { present: [], absent: [], od: [] },
+            afternoon: { present: [], absent: [], od: [] }
           };
         }
+        
         const studentInfo = {
           id: progress.student._id,
           name: progress.student.name,
@@ -131,10 +165,27 @@ const getVenueAttendanceHistory = async (req, res) => {
           batch: progress.student.batch,
           department: progress.student.department
         };
-        if (record.present) {
-          attendanceByDate[dateStr].present.push(studentInfo);
-        } else {
-          attendanceByDate[dateStr].absent.push(studentInfo);
+
+        // Process forenoon session
+        if (record.forenoon) {
+          if (record.forenoon.od) {
+            attendanceByDate[dateStr].forenoon.od.push(studentInfo);
+          } else if (record.forenoon.present) {
+            attendanceByDate[dateStr].forenoon.present.push(studentInfo);
+          } else {
+            attendanceByDate[dateStr].forenoon.absent.push(studentInfo);
+          }
+        }
+
+        // Process afternoon session
+        if (record.afternoon) {
+          if (record.afternoon.od) {
+            attendanceByDate[dateStr].afternoon.od.push(studentInfo);
+          } else if (record.afternoon.present) {
+            attendanceByDate[dateStr].afternoon.present.push(studentInfo);
+          } else {
+            attendanceByDate[dateStr].afternoon.absent.push(studentInfo);
+          }
         }
       });
     });
