@@ -17,7 +17,7 @@ const studentSchema = new mongoose.Schema({
     codechefId: { type: String, default: "" },
     department: { 
       type: String, 
-      enum: ['CSE', 'IT', 'MECH', 'EEE', 'ECE', 'BIOTECH', 'CIVIL'],
+      enum: ['CSE', 'IT', 'MECH', 'EEE', 'ECE', 'BIOTECH', 'CIVIL', 'AIML', 'BDA','CC','CS','CSBS','GT','IOT'],
       required: true
   }
   });
