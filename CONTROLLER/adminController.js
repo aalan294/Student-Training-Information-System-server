@@ -151,6 +151,72 @@ const bulkRegisterStudents = async (req, res) => {
   }
 };
 
+const bulkRegisterWithDetails = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const filePath = req.file.path;
+    const workbook = XLSX.readFile(filePath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const studentsData = XLSX.utils.sheet_to_json(sheet);
+
+    const requiredColumns = ['name', 'regNo', 'email', 'department', 'batch', 'passoutYear'];
+    const firstRow = studentsData[0] || {};
+    const hasAllColumns = requiredColumns.every(col => Object.keys(firstRow).includes(col));
+
+    if (!hasAllColumns) {
+      fs.unlinkSync(filePath);
+      return res.status(400).json({
+        message: 'Excel file must contain columns: name, regNo, email, department, batch, passoutYear',
+      });
+    }
+
+    const preparedStudents = await Promise.all(
+      studentsData.map(async (student) => {
+        const hashedPassword = await bcrypt.hash(String(student.regNo).trim(), 10);
+        return {
+          name: String(student.name).trim(),
+          regNo: String(student.regNo).trim(),
+          email: String(student.email).trim(),
+          department: String(student.department).trim(),
+          batch: String(student.batch).trim(),
+          passoutYear: String(student.passoutYear).trim(),
+          password: hashedPassword,
+        };
+      })
+    );
+
+    // Use a try-catch block to handle potential duplicate key errors
+    try {
+      await Student.insertMany(preparedStudents, { ordered: false });
+    } catch (error) {
+      if (error.code === 11000) {
+        // This error code indicates a duplicate key error
+        // Some students were duplicates, but others may have been inserted.
+        // We can treat this as a partial success.
+      } else {
+        // Re-throw other errors
+        throw error;
+      }
+    }
+
+
+    fs.unlinkSync(filePath);
+
+    res.status(201).json({ message: 'Students registered successfully. Some duplicates may have been skipped.' });
+
+  } catch (err) {
+    console.error(err);
+    // Ensure file is deleted even if an error occurs
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ message: 'Bulk registration failed', error: err.message });
+  }
+};
+
 // Get all students
 const getAllStudents = async (req, res) => {
   try {
@@ -1143,6 +1209,7 @@ module.exports = {
   loginAdmin, 
   registerStudent,
   bulkRegisterStudents,
+  bulkRegisterWithDetails,
   getAllStudents,
   addTrainingModule,
   getAllModules,

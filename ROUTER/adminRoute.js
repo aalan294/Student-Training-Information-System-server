@@ -26,6 +26,8 @@ router.route('/bulk-register')
     .post(require('../MIDDLEWARE/bulkStudentRegister'), adminController.bulkRegisterStudents);
 router.route('/register-student')
     .post(adminController.registerStudent);
+router.route('/bulk-register-with-details')
+    .post(upload.single('excel'), adminController.bulkRegisterWithDetails);
 router.route('/students')
     .get(adminController.getAllStudents);
 router.route('/student/:studentId')
