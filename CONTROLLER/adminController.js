@@ -196,6 +196,7 @@ const bulkRegisterWithDetails = async (req, res) => {
         // This error code indicates a duplicate key error
         // Some students were duplicates, but others may have been inserted.
         // We can treat this as a partial success.
+        console.log("Rejected duplicate entries:", error.writeErrors.map(e => e.err.op));
       } else {
         // Re-throw other errors
         throw error;
