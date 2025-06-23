@@ -1247,18 +1247,27 @@ const markAttendanceByAdmin = async (req, res) => {
       
       await progress.save();
 
-      // If absent, send email
-      if (!present && !od) {
-        sendAbsenceEmail(progress.student.email, date, session);
-      }
-
-      return { studentId, status: 'success' };
+      return { 
+        student: progress.student, 
+        status: 'success',
+        present: present,
+        od: od || false
+      };
     });
 
     const results = await Promise.all(updatePromises);
 
+    // Filter out absent students and send emails in a batch
+    const absentStudentEmails = results
+      .filter(result => result.status === 'success' && !result.present && !result.od)
+      .map(result => result.student.email);
+    
+    if (absentStudentEmails.length > 0) {
+      sendAbsenceEmail(absentStudentEmails, date, session);
+    }
+
     res.status(200).json({ 
-      message: `${session} attendance marked successfully by admin`, 
+      message: `${session} attendance marked successfully by admin`,
       results,
       session,
       date: attendanceDate.toISOString().split('T')[0]

@@ -123,11 +123,13 @@ const markAttendance = async (req, res) => {
     const results = await Promise.all(updatePromises);
 
     // Send emails to absent students
-    results.forEach(result => {
-      if (result.status === 'success' && !result.present && !result.od) {
-        sendAbsenceEmail(result.student.email, date, session);
-      }
-    });
+    const absentStudentEmails = results
+      .filter(result => result.status === 'success' && !result.present && !result.od)
+      .map(result => result.student.email);
+
+    if (absentStudentEmails.length > 0) {
+      sendAbsenceEmail(absentStudentEmails, date, session);
+    }
 
     res.status(200).json({ 
       message: `${session} attendance marked successfully`, 
