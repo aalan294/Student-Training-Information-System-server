@@ -9,6 +9,7 @@ const Venue = require('../MODELS/venueSchema');
 const XLSX = require('xlsx');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const { sendAbsenceEmail } = require('../services/emailService');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -1205,6 +1206,68 @@ const getAllVenuesAttendanceHistory = async (req, res) => {
   }
 };
 
+const markAttendanceByAdmin = async (req, res) => {
+  try {
+    const { date, session, attendanceData } = req.body; // attendanceData: array of {studentId, venueId, present, od}
+    
+    const attendanceDate = new Date(date);
+    if (isNaN(attendanceDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid date format' });
+    }
+
+    const updatePromises = attendanceData.map(async (studentAttendance) => {
+      const { studentId, venueId, present, od } = studentAttendance;
+
+      if (!studentId || !venueId) {
+        return { studentId, status: 'skipped', reason: 'Missing studentId or venueId' };
+      }
+
+      const progress = await TrainingProgress.findOne({ student: studentId, venueId }).populate('student', 'email');
+      if (!progress) {
+        return { studentId, status: 'skipped', reason: 'Training progress not found' };
+      }
+
+      const existingIndex = progress.attendance.findIndex(a => 
+        a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
+      );
+
+      if (existingIndex !== -1) {
+        // Update existing attendance record
+        progress.attendance[existingIndex][session] = { present, od: od || false };
+      } else {
+        // Create new attendance record
+        const newAttendance = {
+          date: attendanceDate,
+          forenoon: { present: false, od: false },
+          afternoon: { present: false, od: false }
+        };
+        newAttendance[session] = { present, od: od || false };
+        progress.attendance.push(newAttendance);
+      }
+      
+      await progress.save();
+
+      // If absent, send email
+      if (!present && !od) {
+        sendAbsenceEmail(progress.student.email, date, session);
+      }
+
+      return { studentId, status: 'success' };
+    });
+
+    const results = await Promise.all(updatePromises);
+
+    res.status(200).json({ 
+      message: `${session} attendance marked successfully by admin`, 
+      results,
+      session,
+      date: attendanceDate.toISOString().split('T')[0]
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error marking attendance by admin', error: error.message });
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -1230,5 +1293,6 @@ module.exports = {
   getAllStaff,
   unassignStaffFromVenue,
   emergencyUnassignAll,
-  getAllVenuesAttendanceHistory
+  getAllVenuesAttendanceHistory,
+  markAttendanceByAdmin
 };
