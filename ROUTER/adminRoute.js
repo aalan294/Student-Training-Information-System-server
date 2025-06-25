@@ -52,6 +52,7 @@ router.route('/upload-score')
 
 // Attendance management route
 router.post('/mark-attendance', adminController.markAttendanceByAdmin);
+router.get('/existing-attendance', adminController.getExistingAttendance);
 router.route('/attendance')
     .post(adminController.updateAttendance);
 

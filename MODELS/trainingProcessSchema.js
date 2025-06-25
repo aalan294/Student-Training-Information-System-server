@@ -8,11 +8,13 @@ const trainingProgressSchema = new mongoose.Schema({
       date: Date,
       forenoon: {
         present: { type: Boolean, default: false },
-        od: { type: Boolean, default: false }
+        od: { type: Boolean, default: false },
+        emailSent: { type: Boolean, default: false }
       },
       afternoon: {
         present: { type: Boolean, default: false },
-        od: { type: Boolean, default: false }
+        od: { type: Boolean, default: false },
+        emailSent: { type: Boolean, default: false }
       }
     }],
     examScores: [{

@@ -91,49 +91,87 @@ const markAttendance = async (req, res) => {
         a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
       );
 
+      let wasPreviouslyAbsent = false;
+      let emailAlreadySent = false;
+
       if (existingIndex !== -1) {
         // Update existing attendance record
-        progress.attendance[existingIndex][session] = {
+        const existingRecord = progress.attendance[existingIndex];
+        
+        // Check if student was previously absent and if email was already sent
+        wasPreviouslyAbsent = !existingRecord[session]?.present && !existingRecord[session]?.od;
+        emailAlreadySent = existingRecord[session]?.emailSent || false;
+        
+        existingRecord[session] = {
           present: studentAttendance.present,
-          od: studentAttendance.od || false
+          od: studentAttendance.od || false,
+          emailSent: existingRecord[session]?.emailSent || false // Preserve email sent status
         };
       } else {
         // Create new attendance record
         const newAttendance = {
           date: attendanceDate,
-          forenoon: { present: false, od: false },
-          afternoon: { present: false, od: false }
+          forenoon: { present: false, od: false, emailSent: false },
+          afternoon: { present: false, od: false, emailSent: false }
         };
         newAttendance[session] = {
           present: studentAttendance.present,
-          od: studentAttendance.od || false
+          od: studentAttendance.od || false,
+          emailSent: false
         };
         progress.attendance.push(newAttendance);
       }
       
       await progress.save();
+
+      // Determine if email should be sent
+      const isCurrentlyAbsent = !studentAttendance.present && !studentAttendance.od;
+      const shouldSendEmail = isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
+
+      // Mark email as sent if we're going to send it
+      if (shouldSendEmail) {
+        if (existingIndex !== -1) {
+          progress.attendance[existingIndex][session].emailSent = true;
+          await progress.save();
+        } else {
+          // For new records, update the emailSent flag
+          const newIndex = progress.attendance.length - 1;
+          progress.attendance[newIndex][session].emailSent = true;
+          await progress.save();
+        }
+      }
+
       return { 
         student: progress.student, 
         status: 'success',
         present: studentAttendance.present,
-        od: studentAttendance.od || false
+        od: studentAttendance.od || false,
+        shouldSendEmail,
+        wasPreviouslyAbsent,
+        emailAlreadySent
       };
     });
 
     const results = await Promise.all(updatePromises);
 
-    // Send emails to absent students
-    const absentStudentEmails = results
-      .filter(result => result.status === 'success' && !result.present && !result.od)
+    // Send emails to newly absent students only
+    const newlyAbsentStudentEmails = results
+      .filter(result => result.status === 'success' && result.shouldSendEmail)
       .map(result => result.student.email);
 
-    if (absentStudentEmails.length > 0) {
-      sendAbsenceEmail(absentStudentEmails, date, session);
+    if (newlyAbsentStudentEmails.length > 0) {
+      sendAbsenceEmail(newlyAbsentStudentEmails, date, session);
     }
 
     res.status(200).json({ 
       message: `${session} attendance marked successfully`, 
       results: results.map(r => ({ ...r, student: r.student ? r.student._id : null })),
+      summary: {
+        total: results.length,
+        successful: results.filter(r => r.status === 'success').length,
+        newlyAbsentStudents: newlyAbsentStudentEmails.length,
+        emailsSent: newlyAbsentStudentEmails.length
+      },
       session,
       date: attendanceDate.toISOString().split('T')[0]
     });

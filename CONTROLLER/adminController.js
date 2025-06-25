@@ -1215,6 +1215,12 @@ const markAttendanceByAdmin = async (req, res) => {
       return res.status(400).json({ message: 'Invalid date format' });
     }
 
+    if (!['forenoon', 'afternoon'].includes(session)) {
+      return res.status(400).json({ 
+        message: 'Invalid session. Must be either "forenoon" or "afternoon"' 
+      });
+    }
+
     const updatePromises = attendanceData.map(async (studentAttendance) => {
       const { studentId, venueId, present, od } = studentAttendance;
 
@@ -1231,49 +1237,171 @@ const markAttendanceByAdmin = async (req, res) => {
         a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
       );
 
+      let wasPreviouslyAbsent = false;
+      let emailAlreadySent = false;
+
       if (existingIndex !== -1) {
-        // Update existing attendance record
-        progress.attendance[existingIndex][session] = { present, od: od || false };
+        // Update existing attendance record - preserve other session data
+        const existingRecord = progress.attendance[existingIndex];
+        
+        // Check if student was previously absent and if email was already sent
+        wasPreviouslyAbsent = !existingRecord[session]?.present && !existingRecord[session]?.od;
+        emailAlreadySent = existingRecord[session]?.emailSent || false;
+        
+        existingRecord[session] = { 
+          present, 
+          od: od || false,
+          emailSent: existingRecord[session]?.emailSent || false // Preserve email sent status
+        };
+        
+        // Keep the other session data intact
+        if (!existingRecord.forenoon) existingRecord.forenoon = { present: false, od: false, emailSent: false };
+        if (!existingRecord.afternoon) existingRecord.afternoon = { present: false, od: false, emailSent: false };
       } else {
-        // Create new attendance record
+        // Create new attendance record with default values for both sessions
         const newAttendance = {
           date: attendanceDate,
-          forenoon: { present: false, od: false },
-          afternoon: { present: false, od: false }
+          forenoon: { present: false, od: false, emailSent: false },
+          afternoon: { present: false, od: false, emailSent: false }
         };
-        newAttendance[session] = { present, od: od || false };
+        newAttendance[session] = { present, od: od || false, emailSent: false };
         progress.attendance.push(newAttendance);
       }
       
       await progress.save();
 
+      // Determine if email should be sent
+      const isCurrentlyAbsent = !present && !od;
+      const shouldSendEmail = isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
+
+      // Mark email as sent if we're going to send it
+      if (shouldSendEmail) {
+        if (existingIndex !== -1) {
+          progress.attendance[existingIndex][session].emailSent = true;
+          await progress.save();
+        } else {
+          // For new records, update the emailSent flag
+          const newIndex = progress.attendance.length - 1;
+          progress.attendance[newIndex][session].emailSent = true;
+          await progress.save();
+        }
+      }
+
       return { 
         student: progress.student, 
         status: 'success',
         present: present,
-        od: od || false
+        od: od || false,
+        shouldSendEmail,
+        wasPreviouslyAbsent,
+        emailAlreadySent
       };
     });
 
     const results = await Promise.all(updatePromises);
 
-    // Filter out absent students and send emails in a batch
-    const absentStudentEmails = results
-      .filter(result => result.status === 'success' && !result.present && !result.od)
+    // Filter out students who should receive absence emails (only newly absent students)
+    const newlyAbsentStudentEmails = results
+      .filter(result => result.status === 'success' && result.shouldSendEmail)
       .map(result => result.student.email);
     
-    if (absentStudentEmails.length > 0) {
-      sendAbsenceEmail(absentStudentEmails, date, session);
+    if (newlyAbsentStudentEmails.length > 0) {
+      sendAbsenceEmail(newlyAbsentStudentEmails, date, session);
     }
 
+    const successfulUpdates = results.filter(r => r.status === 'success');
+    const skippedUpdates = results.filter(r => r.status === 'skipped');
+    const newlyAbsentCount = newlyAbsentStudentEmails.length;
+
     res.status(200).json({ 
-      message: `${session} attendance marked successfully by admin`,
+      message: `${session} attendance updated successfully by admin`,
       results,
+      summary: {
+        successful: successfulUpdates.length,
+        skipped: skippedUpdates.length,
+        total: attendanceData.length,
+        newlyAbsentStudents: newlyAbsentCount,
+        emailsSent: newlyAbsentCount
+      },
       session,
       date: attendanceDate.toISOString().split('T')[0]
     });
   } catch (error) {
+    console.error('Error marking attendance by admin:', error);
     res.status(500).json({ message: 'Error marking attendance by admin', error: error.message });
+  }
+};
+
+// Get existing attendance data for admin
+const getExistingAttendance = async (req, res) => {
+  try {
+    const { date, session } = req.query;
+    
+    if (!date || !session) {
+      return res.status(400).json({ 
+        message: 'Missing required parameters: date and session are required' 
+      });
+    }
+
+    if (!['forenoon', 'afternoon'].includes(session)) {
+      return res.status(400).json({ 
+        message: 'Invalid session. Must be either "forenoon" or "afternoon"' 
+      });
+    }
+
+    const attendanceDate = new Date(date);
+    if (isNaN(attendanceDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid date format' });
+    }
+
+    // Get all training progresses with attendance data for the specified date
+    const progresses = await TrainingProgress.find({
+      'attendance.date': {
+        $gte: new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate()),
+        $lt: new Date(attendanceDate.getFullYear(), attendanceDate.getMonth(), attendanceDate.getDate() + 1)
+      }
+    }).populate('student', 'name regNo email batch department venues')
+      .populate('venueId', 'name');
+
+    const attendanceData = {};
+    
+    progresses.forEach(progress => {
+      const attendanceRecord = progress.attendance.find(a => 
+        a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
+      );
+
+      if (attendanceRecord && attendanceRecord[session]) {
+        attendanceData[progress.student._id] = {
+          studentId: progress.student._id,
+          venueId: progress.venueId?._id,
+          venueName: progress.venueId?.name,
+          present: attendanceRecord[session].present,
+          od: attendanceRecord[session].od || false,
+          emailSent: attendanceRecord[session].emailSent || false,
+          student: {
+            name: progress.student.name,
+            regNo: progress.student.regNo,
+            email: progress.student.email,
+            batch: progress.student.batch,
+            department: progress.student.department
+          }
+        };
+      }
+    });
+
+    res.status(200).json({
+      date: attendanceDate.toISOString().split('T')[0],
+      session,
+      attendanceData,
+      totalRecords: Object.keys(attendanceData).length
+    });
+
+  } catch (error) {
+    console.error('Error fetching existing attendance:', error);
+    res.status(500).json({ 
+      message: 'Error fetching existing attendance', 
+      error: error.message 
+    });
   }
 };
 
@@ -1303,5 +1431,6 @@ module.exports = {
   unassignStaffFromVenue,
   emergencyUnassignAll,
   getAllVenuesAttendanceHistory,
-  markAttendanceByAdmin
+  markAttendanceByAdmin,
+  getExistingAttendance
 };
