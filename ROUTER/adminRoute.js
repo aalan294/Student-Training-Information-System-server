@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../CONTROLLER/adminController');
 const multer = require('multer');
+const { auth } = require('../MIDDLEWARE/authMiddleware');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -79,5 +80,9 @@ router.route('/staff/emergency-unassign-all')
 router.route('/venues')
     .post(adminController.registerVenue)
     .get(adminController.getAllVenues);
+
+// Configuration routes
+router.get('/config', auth, adminController.getSystemConfig);
+router.put('/config', auth, adminController.updateSystemConfig);
 
 module.exports = router;

@@ -10,6 +10,7 @@ const XLSX = require('xlsx');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const { sendAbsenceEmail } = require('../services/emailService');
+const Config = require('../MODELS/configSchema');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -163,14 +164,15 @@ const bulkRegisterWithDetails = async (req, res) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const studentsData = XLSX.utils.sheet_to_json(sheet);
 
-    const requiredColumns = ['name', 'regNo', 'email', 'department', 'batch', 'passoutYear'];
+    const requiredColumns = ['name', 'regNo', 'email', 'department', 'passoutYear'];
     const firstRow = studentsData[0] || {};
     const hasAllColumns = requiredColumns.every(col => Object.keys(firstRow).includes(col));
 
     if (!hasAllColumns) {
       fs.unlinkSync(filePath);
       return res.status(400).json({
-        message: 'Excel file must contain columns: name, regNo, email, department, batch, passoutYear',
+        message: 'Excel file must contain columns: name, regNo, email, department, passoutYear',
+        note: 'batch field is optional and will default to "General" if not specified'
       });
     }
 
@@ -182,7 +184,7 @@ const bulkRegisterWithDetails = async (req, res) => {
           regNo: String(student.regNo).trim(),
           email: String(student.email).trim(),
           department: String(student.department).trim(),
-          batch: String(student.batch).trim(),
+          batch: student.batch ? String(student.batch).trim() : 'General',
           passoutYear: String(student.passoutYear).trim(),
           password: hashedPassword,
         };
@@ -204,10 +206,12 @@ const bulkRegisterWithDetails = async (req, res) => {
       }
     }
 
-
     fs.unlinkSync(filePath);
 
-    res.status(201).json({ message: 'Students registered successfully. Some duplicates may have been skipped.' });
+    res.status(201).json({ 
+      message: 'Students registered successfully. Some duplicates may have been skipped.',
+      note: 'Students without a specified batch were assigned to the "General" category'
+    });
 
   } catch (err) {
     console.error(err);
@@ -1208,11 +1212,16 @@ const getAllVenuesAttendanceHistory = async (req, res) => {
 
 const markAttendanceByAdmin = async (req, res) => {
   try {
-    const { date, session, attendanceData } = req.body; // attendanceData: array of {studentId, venueId, present, od}
-    
+    const { date, session, attendanceData } = req.body;
     const attendanceDate = new Date(date);
     if (isNaN(attendanceDate.getTime())) {
       return res.status(400).json({ message: 'Invalid date format' });
+    }
+    // Restrict admin from editing attendance after 24 hours
+    const now = new Date();
+    const diffHours = (now - attendanceDate) / (1000 * 60 * 60);
+    if (diffHours > 24) {
+      return res.status(403).json({ message: 'Attendance can only be edited within 24 hours of the session.' });
     }
 
     if (!['forenoon', 'afternoon'].includes(session)) {
@@ -1221,16 +1230,30 @@ const markAttendanceByAdmin = async (req, res) => {
       });
     }
 
-    const updatePromises = attendanceData.map(async (studentAttendance) => {
-      const { studentId, venueId, present, od } = studentAttendance;
+    // Get system configuration for email notifications
+    const systemConfig = await Config.findOne({ key: 'emailNotifications' });
+    const emailNotificationsEnabled = systemConfig ? systemConfig.value : true;
 
-      if (!studentId || !venueId) {
-        return { studentId, status: 'skipped', reason: 'Missing studentId or venueId' };
+    // Get all students with venues for this session
+    const allStudents = await Student.find({ 'venues.0': { $exists: true } })
+      .populate('venues.venueId', 'name');
+
+    const updatePromises = allStudents.map(async (student) => {
+      const venue = student.venues && student.venues.length > 0 ? student.venues[0] : null;
+      if (!venue) {
+        return { studentId: student._id, status: 'skipped', reason: 'No venue assigned' };
       }
 
-      const progress = await TrainingProgress.findOne({ student: studentId, venueId }).populate('student', 'email');
+      // Find explicit attendance data for this student
+      const explicitAttendance = attendanceData.find(a => a.studentId === student._id.toString());
+      
+      // Default to present if no explicit data provided
+      const present = explicitAttendance ? explicitAttendance.present : true;
+      const od = explicitAttendance ? (explicitAttendance.od || false) : false;
+
+      const progress = await TrainingProgress.findOne({ student: student._id, venueId: venue.venueId }).populate('student', 'email');
       if (!progress) {
-        return { studentId, status: 'skipped', reason: 'Training progress not found' };
+        return { studentId: student._id, status: 'skipped', reason: 'Training progress not found' };
       }
 
       const existingIndex = progress.attendance.findIndex(a => 
@@ -1270,9 +1293,9 @@ const markAttendanceByAdmin = async (req, res) => {
       
       await progress.save();
 
-      // Determine if email should be sent
+      // Determine if email should be sent (only if email notifications are enabled)
       const isCurrentlyAbsent = !present && !od;
-      const shouldSendEmail = isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
+      const shouldSendEmail = emailNotificationsEnabled && isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
 
       // Mark email as sent if we're going to send it
       if (shouldSendEmail) {
@@ -1294,24 +1317,26 @@ const markAttendanceByAdmin = async (req, res) => {
         od: od || false,
         shouldSendEmail,
         wasPreviouslyAbsent,
-        emailAlreadySent
+        emailAlreadySent,
+        wasExplicitlyMarked: !!explicitAttendance
       };
     });
 
     const results = await Promise.all(updatePromises);
 
-    // Filter out students who should receive absence emails (only newly absent students)
+    // Filter out students who should receive absence emails (only newly absent students and if email notifications are enabled)
     const newlyAbsentStudentEmails = results
       .filter(result => result.status === 'success' && result.shouldSendEmail)
       .map(result => result.student.email);
     
-    if (newlyAbsentStudentEmails.length > 0) {
+    if (newlyAbsentStudentEmails.length > 0 && emailNotificationsEnabled) {
       sendAbsenceEmail(newlyAbsentStudentEmails, date, session);
     }
 
     const successfulUpdates = results.filter(r => r.status === 'success');
     const skippedUpdates = results.filter(r => r.status === 'skipped');
     const newlyAbsentCount = newlyAbsentStudentEmails.length;
+    const explicitlyMarkedCount = results.filter(r => r.status === 'success' && r.wasExplicitlyMarked).length;
 
     res.status(200).json({ 
       message: `${session} attendance updated successfully by admin`,
@@ -1319,16 +1344,22 @@ const markAttendanceByAdmin = async (req, res) => {
       summary: {
         successful: successfulUpdates.length,
         skipped: skippedUpdates.length,
-        total: attendanceData.length,
+        total: allStudents.length,
+        explicitlyMarked: explicitlyMarkedCount,
+        defaultedToPresent: successfulUpdates.length - explicitlyMarkedCount,
         newlyAbsentStudents: newlyAbsentCount,
-        emailsSent: newlyAbsentCount
+        emailsSent: emailNotificationsEnabled ? newlyAbsentCount : 0,
+        emailNotificationsEnabled
       },
       session,
       date: attendanceDate.toISOString().split('T')[0]
     });
   } catch (error) {
     console.error('Error marking attendance by admin:', error);
-    res.status(500).json({ message: 'Error marking attendance by admin', error: error.message });
+    res.status(500).json({ 
+      message: 'Error marking attendance', 
+      error: error.message 
+    });
   }
 };
 
@@ -1405,6 +1436,102 @@ const getExistingAttendance = async (req, res) => {
   }
 };
 
+// Get system configuration
+const getSystemConfig = async (req, res) => {
+  try {
+    const configs = await Config.find({});
+    const configObject = {};
+    configs.forEach(config => {
+      configObject[config.key] = config.value;
+    });
+    
+    res.status(200).json({ config: configObject });
+  } catch (error) {
+    console.error('Error fetching system config:', error);
+    res.status(500).json({ 
+      message: 'Error fetching system configuration', 
+      error: error.message 
+    });
+  }
+};
+
+// Update system configuration
+const updateSystemConfig = async (req, res) => {
+  try {
+    const { config } = req.body;
+    
+    if (!config || typeof config !== 'object') {
+      return res.status(400).json({ 
+        message: 'Invalid configuration data' 
+      });
+    }
+
+    const updatePromises = Object.entries(config).map(async ([key, value]) => {
+      return await Config.findOneAndUpdate(
+        { key },
+        { value, description: getConfigDescription(key) },
+        { upsert: true, new: true }
+      );
+    });
+
+    await Promise.all(updatePromises);
+    
+    res.status(200).json({ 
+      message: 'System configuration updated successfully',
+      config 
+    });
+  } catch (error) {
+    console.error('Error updating system config:', error);
+    res.status(500).json({ 
+      message: 'Error updating system configuration', 
+      error: error.message 
+    });
+  }
+};
+
+// Helper function to get config descriptions
+const getConfigDescription = (key) => {
+  const descriptions = {
+    'defaultSession': 'Default session for attendance marking (forenoon/afternoon)',
+    'emailNotifications': 'Enable/disable email notifications for absences',
+    'autoMarkAbsent': 'Automatically mark students as absent if not marked present'
+  };
+  return descriptions[key] || '';
+};
+
+// Initialize default configuration
+const initializeDefaultConfig = async () => {
+  try {
+    const defaultConfigs = [
+      { key: 'defaultSession', value: 'forenoon', description: 'Default session for attendance marking (forenoon/afternoon)' },
+      { key: 'emailNotifications', value: true, description: 'Enable/disable email notifications for absences' },
+      { key: 'autoMarkAbsent', value: false, description: 'Automatically mark students as absent if not marked present' }
+    ];
+
+    for (const config of defaultConfigs) {
+      await Config.findOneAndUpdate(
+        { key: config.key },
+        config,
+        { upsert: true }
+      );
+    }
+    console.log('Default configuration initialized');
+  } catch (error) {
+    console.error('Error initializing default config:', error);
+  }
+};
+
+// Utility function to get default session
+const getDefaultSession = async () => {
+  try {
+    const config = await Config.findOne({ key: 'defaultSession' });
+    return config ? config.value : 'forenoon';
+  } catch (error) {
+    console.error('Error getting default session:', error);
+    return 'forenoon'; // fallback to forenoon
+  }
+};
+
 module.exports = { 
   registerAdmin, 
   loginAdmin, 
@@ -1432,5 +1559,9 @@ module.exports = {
   emergencyUnassignAll,
   getAllVenuesAttendanceHistory,
   markAttendanceByAdmin,
-  getExistingAttendance
+  getExistingAttendance,
+  getSystemConfig,
+  updateSystemConfig,
+  initializeDefaultConfig,
+  getDefaultSession
 };

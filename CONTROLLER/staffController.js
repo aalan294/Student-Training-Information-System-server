@@ -5,6 +5,7 @@ const TrainingProgress = require('../MODELS/trainingProcessSchema');
 const { sendAbsenceEmail } = require('../services/emailService');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const Config = require('../MODELS/configSchema');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'staffsecret';
 
@@ -82,10 +83,31 @@ const markAttendance = async (req, res) => {
       return res.status(400).json({ message: 'Invalid date format' });
     }
 
+    // Restrict staff from editing attendance after submission
+    let alreadySubmitted = false;
+    for (const progress of progresses) {
+      const existingIndex = progress.attendance.findIndex(a => a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]);
+      if (existingIndex !== -1 && progress.attendance[existingIndex][session] && (progress.attendance[existingIndex][session].present || progress.attendance[existingIndex][session].od || !progress.attendance[existingIndex][session].present)) {
+        alreadySubmitted = true;
+        break;
+      }
+    }
+    if (alreadySubmitted) {
+      return res.status(403).json({ message: 'Attendance already submitted for this session. Editing is not allowed.' });
+    }
+
+    // Get system configuration for email notifications
+    const systemConfig = await Config.findOne({ key: 'emailNotifications' });
+    const emailNotificationsEnabled = systemConfig ? systemConfig.value : true;
+
     // Mark attendance for each student
     const updatePromises = progresses.map(async (progress) => {
-      const studentAttendance = attendanceData.find(a => a.studentId === progress.student._id.toString());
-      if (!studentAttendance) return { studentId: progress.student._id, status: 'skipped' };
+      // Find explicit attendance data for this student
+      const explicitAttendance = attendanceData.find(a => a.studentId === progress.student._id.toString());
+      
+      // Default to present if no explicit data provided
+      const present = explicitAttendance ? explicitAttendance.present : true;
+      const od = explicitAttendance ? (explicitAttendance.od || false) : false;
 
       const existingIndex = progress.attendance.findIndex(a => 
         a.date.toISOString().split('T')[0] === attendanceDate.toISOString().split('T')[0]
@@ -103,8 +125,8 @@ const markAttendance = async (req, res) => {
         emailAlreadySent = existingRecord[session]?.emailSent || false;
         
         existingRecord[session] = {
-          present: studentAttendance.present,
-          od: studentAttendance.od || false,
+          present: present,
+          od: od || false,
           emailSent: existingRecord[session]?.emailSent || false // Preserve email sent status
         };
       } else {
@@ -115,8 +137,8 @@ const markAttendance = async (req, res) => {
           afternoon: { present: false, od: false, emailSent: false }
         };
         newAttendance[session] = {
-          present: studentAttendance.present,
-          od: studentAttendance.od || false,
+          present: present,
+          od: od || false,
           emailSent: false
         };
         progress.attendance.push(newAttendance);
@@ -124,9 +146,9 @@ const markAttendance = async (req, res) => {
       
       await progress.save();
 
-      // Determine if email should be sent
-      const isCurrentlyAbsent = !studentAttendance.present && !studentAttendance.od;
-      const shouldSendEmail = isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
+      // Determine if email should be sent (only if email notifications are enabled)
+      const isCurrentlyAbsent = !present && !od;
+      const shouldSendEmail = emailNotificationsEnabled && isCurrentlyAbsent && !wasPreviouslyAbsent && !emailAlreadySent;
 
       // Mark email as sent if we're going to send it
       if (shouldSendEmail) {
@@ -144,39 +166,53 @@ const markAttendance = async (req, res) => {
       return { 
         student: progress.student, 
         status: 'success',
-        present: studentAttendance.present,
-        od: studentAttendance.od || false,
+        present: present,
+        od: od || false,
         shouldSendEmail,
         wasPreviouslyAbsent,
-        emailAlreadySent
+        emailAlreadySent,
+        wasExplicitlyMarked: !!explicitAttendance
       };
     });
 
     const results = await Promise.all(updatePromises);
 
-    // Send emails to newly absent students only
+    // Filter out students who should receive absence emails (only newly absent students and if email notifications are enabled)
     const newlyAbsentStudentEmails = results
       .filter(result => result.status === 'success' && result.shouldSendEmail)
       .map(result => result.student.email);
-
-    if (newlyAbsentStudentEmails.length > 0) {
+    
+    if (newlyAbsentStudentEmails.length > 0 && emailNotificationsEnabled) {
       sendAbsenceEmail(newlyAbsentStudentEmails, date, session);
     }
 
+    const successfulUpdates = results.filter(r => r.status === 'success');
+    const skippedUpdates = results.filter(r => r.status === 'skipped');
+    const newlyAbsentCount = newlyAbsentStudentEmails.length;
+    const explicitlyMarkedCount = results.filter(r => r.status === 'success' && r.wasExplicitlyMarked).length;
+
     res.status(200).json({ 
-      message: `${session} attendance marked successfully`, 
-      results: results.map(r => ({ ...r, student: r.student ? r.student._id : null })),
+      message: `${session} attendance marked successfully`,
+      results,
       summary: {
-        total: results.length,
-        successful: results.filter(r => r.status === 'success').length,
-        newlyAbsentStudents: newlyAbsentStudentEmails.length,
-        emailsSent: newlyAbsentStudentEmails.length
+        successful: successfulUpdates.length,
+        skipped: skippedUpdates.length,
+        total: progresses.length,
+        explicitlyMarked: explicitlyMarkedCount,
+        defaultedToPresent: successfulUpdates.length - explicitlyMarkedCount,
+        newlyAbsentStudents: newlyAbsentCount,
+        emailsSent: emailNotificationsEnabled ? newlyAbsentCount : 0,
+        emailNotificationsEnabled
       },
       session,
       date: attendanceDate.toISOString().split('T')[0]
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error marking attendance', error: error.message });
+    console.error('Error marking attendance:', error);
+    res.status(500).json({ 
+      message: 'Error marking attendance', 
+      error: error.message 
+    });
   }
 };
 
